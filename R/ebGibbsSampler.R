@@ -45,7 +45,7 @@
 #' lam.gs <- rl.gibbs(file.num,X.s,X.c,num.gs=2,a=.01,b=100,c=1,d, M=3)
 
 
-rl.gibbs <- function(file.num=file.num,X.s=X.s,X.c=X.c,num.gs=num.gs,a=a,b=b,c=c,d=d,M=M)
+rl.gibbs <- function(file.num=file.num,X.s=X.s,X.c=X.c,num.gs=num.gs,a=a,b=b,c=c,d=d,M=M,prior=prior)
 {
 
 
@@ -59,6 +59,7 @@ rl.gibbs <- function(file.num=file.num,X.s=X.s,X.c=X.c,num.gs=num.gs,a=a,b=b,c=c
 	p.s <- dim(X.s)[2]
 	p.c <- dim(X.c)[2]
 	p <- p.s+p.c
+	
 
 	# Get alpha
 	# Note: This is a list of vectors. The lth vector in the list is alpha_l.
@@ -132,7 +133,7 @@ rl.gibbs <- function(file.num=file.num,X.s=X.s,X.c=X.c,num.gs=num.gs,a=a,b=b,c=c
 	# z.out <-
 	# Y.s.out <-
 	# Y.c.out <-
-	lambda.out <- matrix(NA,num.gs,N)
+	lambda.out <- matrix(NA,10,N)
 
 
 
@@ -200,9 +201,8 @@ rl.gibbs <- function(file.num=file.num,X.s=X.s,X.c=X.c,num.gs=num.gs,a=a,b=b,c=c
 		cat_mismatches <- (X.c != Y.c.now)
 		# Only need to calculate z probabilities for matches, which we can get
 		# by negating
-
-
-
+		
+		
 		# Calculate pr.1 for every entry
 		  # Different calculations for string fields and categorical fields
 		#print("Calculating pr.1 for strings")
@@ -430,37 +430,153 @@ calc_q <- function(jp, X.c.ij, X.s.ij, z.s.ij, z.c.ij) {
 		}
 	}
 
-
+	######## BZ's addition ######## 
+	
+	# Function to find most "current" number of clusters identified by population labels,
+	# and how many records there are in each cluster
+	# lamdbda is a vector
+	calc_cluster_probs <- function(possible_latents, ij) {
+	  all.prev <- lambda[1:ij-1]
+	  labels <- unique(all.prev)
+	  k.ij <- length(labels)
+	  N.ij <- ij-1
+	  
+	  possible_new <- possible_latents[!(possible_latents %in% labels)]
+	  possible_existing <- possible_latents[!(possible_latents %in% possible_new)]
+	  
+	  prob.existing <- c()
+	  if (length(possible_existing) > 0) {
+	    n.existing <- sapply(possible_existing, function(x) length(which(all.prev == x)))
+	    prob.existing <- (n.existing - sigma) / (N.ij + theta)
+	  }
+	 
+	  prob.new <- c()
+	  if (length(possible_new) > 0) {
+	    prob.new <- (k.ij*sigma + theta) / (N.ij + theta)
+	  }
+	 
+	  return(list(prob.existing = prob.existing, 
+	              prob.new = prob.new, 
+	              labels = c(possible_existing, possible_new)))
+	}
+	
+	# Function to draw lambda.ij when using PYP prior
+	# lambda is from the current iteration
+	draw.lambda.ij.pyp <- function(lambda, ij) {
+	  # ATTN: This takes much too long! (13 seconds per Gibbs iteration), key bottleneck
+	  X.s.ij <- drop(X.s[ij,])
+	  X.c.ij <- drop(X.c[ij,])
+	  z.s.ij <- drop(z[ij,1:p.s])
+	  z.c.ij <- drop(z[ij,(p.s+1):p])
+	 
+	  # v is not a possible latent for ij if z[ij,l] = 0 but X[ij,l] != Y[v,l]
+	  # Otherwise, v is a possible latent
+	  # build set of impossible latents
+	  # only need to consider fields where z[ij,l] ==0
+	  undistorted_string_fields <- which(z.s.ij == 0)
+	  undistorted_cat_fields <- which(z.c.ij == 0)
+	  impossible_string_latents <- lapply(undistorted_string_fields, latent_string_nonmatch, X.s.ij=X.s.ij)
+	  impossible_string_latents <- unique(do.call("c",impossible_string_latents))
+	  impossible_cat_latents <- lapply(undistorted_cat_fields, latent_cat_nonmatch, X.c.ij = X.c.ij)
+	  impossible_cat_latents <- unique(do.call("c",impossible_cat_latents))
+	  impossible_latents <- union(impossible_string_latents, impossible_cat_latents)
+	  possible_latents <- setdiff(1:M, impossible_latents)
+	  
+	  if(length(possible_latents)==1) {
+	    return(possible_latents)
+	  } else {
+	    if (ij == 1) {
+	      q <- sapply(possible_latents, calc_q, X.s.ij=X.s.ij, X.c.ij=X.c.ij, z.s.ij=z.s.ij, z.c.ij=z.c.ij)
+	      return(sample(possible_latents,size=1,prob=q))
+	    } else {
+	      pyp <- calc_cluster_probs(possible_latents, ij)
+	      prob.existing <- pyp[[1]]
+	      prob.new <- pyp[[2]]
+	      possible_labels <- pyp[[3]]
+	      
+	      q.base <- sapply(possible_labels, calc_q, X.s.ij=X.s.ij, X.c.ij=X.c.ij, z.s.ij=z.s.ij, z.c.ij=z.c.ij)
+	      l1 <- length(prob.existing)
+	      l2 <- length(possible_labels)
+	      
+	      q.existing <- c()
+	      if (l1 > 0) {
+	        q.existing <- q.base[1:l1] * prob.existing
+	      }
+	      
+	      q.new <- c()
+	      if (l2 > l1) {
+	        q.new <- q.base[(l1+1):l2] * prob.new
+	      }
+	     
+	      return(sample(possible_labels,size=1,prob=c(q.existing, q.new)))
+	    }
+	  }
+	}
+	
+	# Function to draw lambda
+	draw.lambda.pyp <- function(Y.s,Y.c,z,theta,sigma){
+	  lambda <- rep(NA, N)
+	  for (ij in 1:N) {
+	    tmp <- draw.lambda.ij.pyp(lambda, ij)
+	    lambda[ij] <- tmp
+	  }
+	  return(lambda)
+	}
+	
+	#########################################
 
 	# Function to draw lambda
 	draw.lambda <- function(Y.s,Y.c,z){
-		output <- sapply(1:N, draw.lambda.ij)
-		return(output)
+	  output <- sapply(1:N, draw.lambda.ij)
+	  return(output)
 	}
-
-
 
 
 	timestamp <- format(Sys.time(), "%Y%m%d-%H%M%S")
 	outputfilename <- paste("lambda-",timestamp,".txt",sep="")
-
-	for(gs.iter in 1:num.gs){
-	  print(sprintf("Gibbs sampler iteration %i", gs.iter))
-		print("     Drawing beta")
-		beta <- draw.beta(z)
-		print("     Drawing z")
-		z <- draw.z(Y.s,Y.c,beta,lambda)
-		print("     Drawing Y.s")
-		Y.s <- draw.Y.s(z,lambda)
-		print("     Drawing Y.c")
-		Y.c <- draw.Y.c(z,lambda)
-		print("     Drawing lambda")
-		lambda <- draw.lambda(Y.s,Y.c,z)
-		print("     Updating lambda history")
-		lambda.out[gs.iter,] <- lambda
-		write.table(matrix(lambda,nrow=1),outputfilename,append=TRUE,
-		row.names=FALSE,col.names=FALSE)
-		flush.console()
+	
+	# Gibbs sampling using PYP prior
+	if (prior == "PYP") {
+	  theta <- 0.4
+	  sigma <- 0.98
+	  for(gs.iter in 1:num.gs){
+	    print(sprintf("Gibbs sampler iteration %i", gs.iter))
+	    print("     Drawing beta")
+	    beta <- draw.beta(z)
+	    print("     Drawing z")
+	    z <- draw.z(Y.s,Y.c,beta,lambda)
+	    print("     Drawing Y.s")
+	    Y.s <- draw.Y.s(z,lambda)
+	    print("     Drawing Y.c")
+	    Y.c <- draw.Y.c(z,lambda)
+	    print("     Drawing lambda")
+	    lambda <- draw.lambda.pyp(Y.s,Y.c,z,theta,sigma)
+	    print("     Updating lambda history")
+	    lambda.out[gs.iter,] <- lambda
+	    write.table(matrix(lambda,nrow=1),outputfilename,append=TRUE,
+	                row.names=FALSE,col.names=FALSE)
+	    flush.console()
+	  }
+	} else if (missing(prior)) {
+	  # Gibbs sampling with default prior
+	  for(gs.iter in 1:num.gs){
+	    print(sprintf("Gibbs sampler iteration %i", gs.iter))
+	    print("     Drawing beta")
+	    beta <- draw.beta(z)
+	    print("     Drawing z")
+	    z <- draw.z(Y.s,Y.c,beta,lambda)
+	    print("     Drawing Y.s")
+	    Y.s <- draw.Y.s(z,lambda)
+	    print("     Drawing Y.c")
+	    Y.c <- draw.Y.c(z,lambda)
+	    print("     Drawing lambda")
+	    lambda <- draw.lambda(Y.s,Y.c,z)
+	    print("     Updating lambda history")
+	    lambda.out[gs.iter,] <- lambda
+	    write.table(matrix(lambda,nrow=1),outputfilename,append=TRUE,
+	                row.names=FALSE,col.names=FALSE)
+	    flush.console()
+	  }
 	}
 
 	return(lambda.out)
