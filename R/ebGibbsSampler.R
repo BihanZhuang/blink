@@ -436,20 +436,26 @@ calc_q <- function(jp, X.c.ij, X.s.ij, z.s.ij, z.c.ij) {
 	# and how many records there are in each cluster
 	# lamdbda is a vector
 	calc_cluster_probs <- function(possible_latents, ij) {
+	  # get lambda_1,1 to lambda_i,j-1
 	  all.prev <- lambda[1:ij-1]
+	  # get all unique population lables
 	  labels <- unique(all.prev)
 	  k.ij <- length(labels)
 	  N.ij <- ij-1
 	  
+	  # find new labels within possible_latents
 	  possible_new <- possible_latents[!(possible_latents %in% labels)]
+	  # find existing lables within possible_latents
 	  possible_existing <- possible_latents[!(possible_latents %in% possible_new)]
 	  
+	  # calculate probability for lambda_i,j to fall into each of the possible existing clusters
 	  prob.existing <- c()
 	  if (length(possible_existing) > 0) {
 	    n.existing <- sapply(possible_existing, function(x) length(which(all.prev == x)))
 	    prob.existing <- (n.existing - sigma) / (N.ij + theta)
 	  }
 	 
+	  # calculate probability for lambda_i,j to fall into each of the possible new clusters
 	  prob.new <- c()
 	  if (length(possible_new) > 0) {
 	    prob.new <- (k.ij*sigma + theta) / (N.ij + theta)
@@ -482,27 +488,33 @@ calc_q <- function(jp, X.c.ij, X.s.ij, z.s.ij, z.c.ij) {
 	  impossible_latents <- union(impossible_string_latents, impossible_cat_latents)
 	  possible_latents <- setdiff(1:M, impossible_latents)
 	  
+	  # above are all the same as original code
 	  if(length(possible_latents)==1) {
 	    return(possible_latents)
 	  } else {
+	    # for the very lambda_1,1, just directly draw from possible_latents
 	    if (ij == 1) {
 	      q <- sapply(possible_latents, calc_q, X.s.ij=X.s.ij, X.c.ij=X.c.ij, z.s.ij=z.s.ij, z.c.ij=z.c.ij)
 	      return(sample(possible_latents,size=1,prob=q))
 	    } else {
+	    # otherwise
 	      pyp <- calc_cluster_probs(possible_latents, ij)
 	      prob.existing <- pyp[[1]]
 	      prob.new <- pyp[[2]]
 	      possible_labels <- pyp[[3]]
 	      
+	      # first calculate the probablity of each label using the full conditional in BA paper
 	      q.base <- sapply(possible_labels, calc_q, X.s.ij=X.s.ij, X.c.ij=X.c.ij, z.s.ij=z.s.ij, z.c.ij=z.c.ij)
 	      l1 <- length(prob.existing)
 	      l2 <- length(possible_labels)
 	      
+	      # then multiply existing labels with existing label probability in PYP prior
 	      q.existing <- c()
 	      if (l1 > 0) {
 	        q.existing <- q.base[1:l1] * prob.existing
 	      }
 	      
+	      # and multiply new labels with new label probability in PYP prior
 	      q.new <- c()
 	      if (l2 > l1) {
 	        q.new <- q.base[(l1+1):l2] * prob.new
@@ -516,6 +528,7 @@ calc_q <- function(jp, X.c.ij, X.s.ij, z.s.ij, z.c.ij) {
 	# Function to draw lambda
 	draw.lambda.pyp <- function(Y.s,Y.c,z,theta,sigma){
 	  lambda <- rep(NA, N)
+	  # draw lambda_i,j base on all previous lambda entries, in the current iteration
 	  for (ij in 1:N) {
 	    tmp <- draw.lambda.ij.pyp(lambda, ij)
 	    lambda[ij] <- tmp
